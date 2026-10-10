@@ -5,7 +5,14 @@
 #   A. DSH-Desktop-2.0.17-uos-amd64.deb   标准 deb，UOS 双击/一条命令安装
 #      —— 依赖在 UOS 桌面版均为系统基线（已实测 dpkg --dry-run 通过）
 #   B. DSH-Desktop-2.0.17-uos-offline-amd64.run  自解压一体化包，零联网
-#      —— 内嵌 10 个依赖 deb，最小化系统也能装
+#      —— 内嵌"系统确实缺失"的依赖，最小化系统也能装
+#
+# 【内嵌策略 —— 血泪教训，勿改】
+#   只内嵌 WHITELIST 里的包。原因：DSH 主程序 9 个 Depends 均无版本约束，
+#   UOS 桌面版已自带且健康。若把 libgtk-3-0 / libuuid1 这类系统基线组件一并内嵌，
+#   会因内嵌版本高于系统而引发版本倒挂（如内嵌 gtk 3.24.41-1deepin8 要求
+#   libgtk-3-common>=1deepin8，而系统只有 1deepin6），连锁导致一堆包无法配置、
+#   主程序也装不上。实测踩过一次（见 outputs/WB-0008-offline-verify-r2.txt）。
 #
 # 用法: bash build-offline-package.sh
 set -e
@@ -15,19 +22,30 @@ DEPS=/home/xuhk/dsh-dist/deps
 MAIN=/home/xuhk/dsh-build/repo/dsh-plugin-desktop/dist/DSH-Desktop-2.0.17-amd64.deb
 OUTDIR=/home/xuhk/dsh-dist/out
 
+# 仅内嵌这些"系统缺失"的包（apt 源里由 ayatana 系列替代已废弃的 libappindicator3-1）
+WHITELIST="libayatana-appindicator3-1 libayatana-indicator3-7 libayatana-ido3-0.4-0"
+
 rm -rf "$WORK" "$OUTDIR"
 mkdir -p "$WORK/payload/deps" "$OUTDIR"
 
 echo "=== 1. 校验输入 ==="
 [ -f "$MAIN" ] || { echo "FAIL: 主包不存在 $MAIN"; exit 1; }
 echo "主包 : $MAIN ($(stat -c%s "$MAIN") bytes)"
-echo "依赖 : $(ls -1 "$DEPS"/*.deb | wc -l) 个"
+
+for p in $WHITELIST; do
+  f=$(ls "$DEPS"/${p}_*.deb 2>/dev/null | head -1)
+  [ -n "$f" ] || { echo "FAIL: 白名单依赖缺失 $p"; exit 1; }
+done
+echo "内嵌 : $(echo $WHITELIST | wc -w) 个（白名单）"
 
 echo
 echo "=== 2. 准备 payload ==="
-cp "$DEPS"/*.deb "$WORK/payload/deps/"
+for p in $WHITELIST; do
+  cp "$DEPS"/${p}_*.deb "$WORK/payload/deps/"
+done
 cp "$MAIN" "$WORK/payload/DSH-Desktop-2.0.17-amd64.deb"
-(cd "$DEPS" && sha256sum *.deb > "$WORK/payload/deps-SHA256SUMS.txt")
+(cd "$WORK/payload/deps" && sha256sum *.deb > "$WORK/payload/deps-SHA256SUMS.txt")
+ls -1 "$WORK/payload/deps/"
 
 cat > "$WORK/payload/install.sh" <<'INSTALL_EOF'
 #!/bin/bash
@@ -55,22 +73,39 @@ if [ -f deps-SHA256SUMS.txt ]; then
   info "校验通过"
 fi
 
-info "安装运行时依赖（已装的自动跳过）..."
-MISSING=""
-for d in deps/*.deb; do
-  pkg=$(dpkg-deb -f "$d" Package 2>/dev/null) || continue
-  dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || MISSING="$MISSING $d"
+info "检查主程序依赖是否已由系统满足..."
+# 主程序 Depends 无版本约束，只要包处于已配置状态即可满足
+UNMET=""
+for p in $(dpkg-deb -f DSH-Desktop-2.0.17-amd64.deb Depends | tr ',' ' '); do
+  p=${p%%|*}; p=$(echo "$p" | tr -d ' ')
+  [ -n "$p" ] || continue
+  dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || UNMET="$UNMET $p"
 done
-
-if [ -z "$MISSING" ]; then
-  info "运行时依赖已全部满足"
+if [ -n "$UNMET" ]; then
+  warn "系统缺少这些依赖:$UNMET"
+  warn "本离线包未内嵌它们（属 UOS 桌面版基线组件，请确认您使用的是完整桌面版）"
 else
-  info "补装缺失依赖"
-  dpkg -i $MISSING || { warn "尝试修复依赖关系..."; apt-get install -f -y --no-download 2>/dev/null || dpkg --configure -a || true; }
+  info "系统依赖已全部满足"
 fi
 
+info "安装可选的托盘依赖（系统缺失时才装）..."
+# ayatana 系列是 Recommends 的可选依赖；系统已有同名包时一律跳过，绝不用内嵌版本覆盖系统
+INSTALLED_ANY=0
+for d in deps/*.deb; do
+  pkg=$(dpkg-deb -f "$d" Package 2>/dev/null) || continue
+  if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+    info "  跳过已装: $pkg"
+    continue
+  fi
+  info "  安装: $pkg"
+  dpkg -i "$d" >/dev/null 2>&1 || true
+  INSTALLED_ANY=1
+done
+[ "$INSTALLED_ANY" = "1" ] && { dpkg --configure -a >/dev/null 2>&1 || true; }
+
 info "安装 DSH Desktop 主程序..."
-dpkg -i DSH-Desktop-2.0.17-amd64.deb || { warn "尝试修复..."; dpkg --configure -a || true; }
+dpkg -i DSH-Desktop-2.0.17-amd64.deb >/dev/null 2>&1 || true
+dpkg --configure -a >/dev/null 2>&1 || true
 
 if dpkg-query -W -f='${Status}' dsh-desktop 2>/dev/null | grep -q "install ok installed"; then
   V=$(dpkg-query -W -f='${Version}' dsh-desktop)
@@ -81,7 +116,8 @@ if dpkg-query -W -f='${Status}' dsh-desktop 2>/dev/null | grep -q "install ok in
   info "启动方式: 应用菜单搜索「DSH Desktop」/ 桌面快捷方式 / 终端 dsh-desktop"
   echo
 else
-  fail "安装失败，请检查上方信息"
+  echo
+  fail "安装失败，请检查上方信息（当前状态: $(dpkg-query -W -f='${Status}' dsh-desktop 2>/dev/null || echo 未安装)）"
 fi
 INSTALL_EOF
 chmod +x "$WORK/payload/install.sh"

@@ -1,0 +1,108 @@
+时间: 2026-10-10 08:55:29
+默认网关: 192.168.249.2
+开始前 DSH 状态: install ok installed
+清理后状态: 未安装
+/opt/DSH Desktop 存在: 否
+路由表:
+192.168.249.0/24 dev ens33 proto kernel scope link src 192.168.249.128 
+192.168.249.0/24 dev ens33 proto kernel scope link src 192.168.249.128 metric 100 
+确认: 外网不可达（离线状态成立）
+apt 源列表条目数: 3
+安装包: DSH-Desktop-2.0.17-uos-offline-amd64.run
+体积: 263348366 bytes
+sha256: e82ab43a94fe66e196a77eef592fe5143d53b47874afd9e9c0f7795be90e90b2
+开始时间: 2026-10-10 08:55:40
+
+[0;32m[DSH][0m DSH Desktop UOS 离线安装程序
+[0;32m[DSH][0m 校验依赖完整性...
+[0;32m[DSH][0m 校验通过
+[0;32m[DSH][0m 安装运行时依赖...
+[0;32m[DSH][0m 内嵌依赖 20 个，批量安装并排序依赖...
+[1;33m[DSH][0m 以下内嵌依赖未能配置: fonts-dejavu-mono libayatana-appindicator3-1 libayatana-ido3-0.4-0 libayatana-indicator3-7 libgtk-3-0
+[1;33m[DSH][0m （若为系统基线组件则不影响使用，请看下方主程序安装结果）
+[0;32m[DSH][0m 安装 DSH Desktop 主程序...
+正在选中未选择的软件包 dsh-desktop。
+(正在读取数据库 ... 系统当前共安装有 167351 个文件和目录。)
+准备解压 DSH-Desktop-2.0.17-amd64.deb  ...
+正在解压 dsh-desktop (2.0.17) ...
+dpkg: 依赖关系问题使得 dsh-desktop 的配置工作不能继续：
+ dsh-desktop 依赖于 libgtk-3-0；然而：
+  软件包 libgtk-3-0:amd64 尚未配置。
+
+dpkg: 处理软件包 dsh-desktop (--install)时出错：
+ 依赖关系问题 - 仍未被配置
+正在处理用于 deepin-home-appstore-daemon (9.0.6) 的触发器 ...
+正在处理用于 desktop-file-utils (0.28-1) 的触发器 ...
+正在处理用于 deepin-desktop-theme (1.1.30) 的触发器 ...
+正在处理用于 hicolor-icon-theme (0.17-2) 的触发器 ...
+在处理时有错误发生：
+ dsh-desktop
+[1;33m[DSH][0m 尝试修复...
+dpkg: 依赖关系问题使得 libgtk-3-0:amd64 的配置工作不能继续：
+ libgtk-3-0:amd64 依赖于 libgtk-3-common (>= 3.24.41-1deepin8)；然而：
+  系统中 libgtk-3-common 的版本为 3.24.41-1deepin6。
+
+dpkg: 处理软件包 libgtk-3-0:amd64 (--configure)时出错：
+ 依赖关系问题 - 仍未被配置
+dpkg: 依赖关系问题使得 libayatana-ido3-0.4-0:amd64 的配置工作不能继续：
+ libayatana-ido3-0.4-0:amd64 依赖于 libgtk-3-0 (>= 3.21.4)；然而：
+  软件包 libgtk-3-0:amd64 尚未配置。
+
+dpkg: 处理软件包 libayatana-ido3-0.4-0:amd64 (--configure)时出错：
+ 依赖关系问题 - 仍未被配置
+dpkg: 依赖关系问题使得 libayatana-appindicator3-1 的配置工作不能继续：
+ libayatana-appindicator3-1 依赖于 libgtk-3-0 (>= 3.0.0)；然而：
+  软件包 libgtk-3-0:amd64 尚未配置。
+
+dpkg: 处理软件包 libayatana-appindicator3-1 (--configure)时出错：
+ 依赖关系问题 - 仍未被配置
+dpkg: 依赖关系问题使得 libayatana-indicator3-7:amd64 的配置工作不能继续：
+ libayatana-indicator3-7:amd64 依赖于 libayatana-ido3-0.4-0 (>= 0.9.0)；然而：
+  软件包 libayatana-ido3-0.4-0:amd64 尚未配置。
+ libayatana-indicator3-7:amd64 依赖于 libgtk-3-0 (>= 3.21.4)；然而：
+  软件包 libgtk-3-0:amd64 尚未配置。
+
+dpkg: 处理软件包 libayatana-indicator3-7:amd64 (--configure)时出错：
+ 依赖关系问题 - 仍未被配置
+dpkg: 依赖关系问题使得 dsh-desktop 的配置工作不能继续：
+ dsh-desktop 依赖于 libgtk-3-0；然而：
+  软件包 libgtk-3-0:amd64 尚未配置。
+
+dpkg: 处理软件包 dsh-desktop (--configure)时出错：
+ 依赖关系问题 - 仍未被配置
+在处理时有错误发生：
+ libgtk-3-0:amd64
+ libayatana-ido3-0.4-0:amd64
+ libayatana-appindicator3-1
+ libayatana-indicator3-7:amd64
+ dsh-desktop
+[0;31m[DSH][0m 安装失败，请检查上方信息
+
+安装返回码: 1
+结束时间: 2026-10-10 08:56:11
+包状态: install ok unpacked
+版本: 2.0.17
+主程序: 存在
+桌面入口: 存在
+图标: 存在
+  libgtk-3-0: install ok unpacked#3.24.41-1deepin8
+  libnss3: install ok installed#2:3.126-1
+  libatspi2.0-0: install ok installed#2.59.1-2deepin1
+  libsecret-1-0: install ok installed#0.21.7-1
+  libxtst6: install ok installed#2:1.2.3-1
+  libayatana-appindicator3-1: install ok unpacked#0.5.94-1
+  libayatana-indicator3-7: install ok unpacked#0.9.3-1
+  libdbusmenu-glib4: install ok installed#18.10.20180917~bzr492+repack1-deepin2
+  libdbusmenu-gtk3-4: install ok installed#18.10.20180917~bzr492+repack1-deepin2
+  libayatana-ido3-0.4-0: install ok unpacked#0.10.4-1
+未配置的包: dsh-desktop libayatana-appindicator3-1 libayatana-ido3-0.4-0:amd64 libayatana-indicator3-7:amd64 libgtk-3-0:amd64 
+默认路由已恢复
+路由表:
+default via 192.168.249.2 dev ens33 
+192.168.249.0/24 dev ens33 proto kernel scope link src 192.168.249.128 
+192.168.249.0/24 dev ens33 proto kernel scope link src 192.168.249.128 metric 100 
+进程: 未运行
+窗口数: 0
+启动日志尾部:
+[1010/085614.053770:FATAL:electron/shell/app/electron_main_delegate.cc:228] Running as root without --no-sandbox is not supported. See https://crbug.com/638180.
+总体判定: FAIL
