@@ -1,0 +1,563 @@
+diff --git a/dsh-plugin-desktop/cordis.patch.yml b/dsh-plugin-desktop/cordis.patch.yml
+index 45abf21..8b6173a 100644
+--- a/dsh-plugin-desktop/cordis.patch.yml
++++ b/dsh-plugin-desktop/cordis.patch.yml
+@@ -7,7 +7,6 @@
+         mode: compatibility
+     - id: desktop-terminal
+       name: dsh-plugin-desktop/terminal
+-      disabled: !!js process.platform === 'linux'
+     - id: desktop-diagnostics
+       name: dsh-plugin-desktop/diagnostics
+     - id: desktop-notifications
+diff --git a/dsh-plugin-desktop/package.json b/dsh-plugin-desktop/package.json
+index 8e4a4cb..88ff82d 100644
+--- a/dsh-plugin-desktop/package.json
++++ b/dsh-plugin-desktop/package.json
+@@ -466,6 +466,14 @@
+       "maintainer": "DeepSeek <dsh-desktop@deepseek.com>",
+       "executableName": "dsh-desktop",
+       "syncDesktopName": true,
++      "desktop": {
++        "entry": {
++          "StartupWMClass": "dsh-desktop",
++          "GenericName": "AI Coding Assistant",
++          "GenericName[zh_CN]": "AI 编码助手",
++          "Comment[zh_CN]": "DeepSeek Harness 智能编码桌面客户端"
++        }
++      },
+       "asar": false
+     },
+     "deb": {
+diff --git a/dsh-plugin-desktop/src/client/index.ts b/dsh-plugin-desktop/src/client/index.ts
+index 6d29063..df45e36 100644
+--- a/dsh-plugin-desktop/src/client/index.ts
++++ b/dsh-plugin-desktop/src/client/index.ts
+@@ -145,7 +145,9 @@ export function apply(ctx: ClientContext): void {
+     () => startRendererBootReporter(ctx.loader),
+     'dsh-plugin-desktop: renderer boot health report',
+   )
+-  if (environment.platform === 'win32') {
++  // Windows and Linux install the Desktop-owned picker bridge for the browse
++  // panel's icon action; macOS keeps upstream's auto picker.
++  if (environment.platform === 'win32' || environment.platform === 'linux') {
+     ctx.effect(
+       () => installDesktopDirectoryPickerBridge(),
+       'dsh-plugin-desktop: native directory picker bridge',
+diff --git a/dsh-plugin-desktop/src/desktop-runtime-environment.ts b/dsh-plugin-desktop/src/desktop-runtime-environment.ts
+index 36ffedf..c27f3f9 100644
+--- a/dsh-plugin-desktop/src/desktop-runtime-environment.ts
++++ b/dsh-plugin-desktop/src/desktop-runtime-environment.ts
+@@ -464,6 +464,20 @@ function windowsDshShim(options: DesktopDshRuntimeOptions): string {
+   ].join('\r\n')
+ }
+ 
++/** Build the public POSIX DSH command scoped to one active profile. */
++function posixDshShim(options: DesktopDshRuntimeOptions): string {
++  return [
++    '#!/bin/sh',
++    [
++      `${RUN_AS_NODE}=1`,
++      `${DEFAULT_PROFILE}=${quoteSh(options.profileName)}`,
++      `${DSH_HOME}=${quoteSh(options.homeDir)}`,
++      `exec ${quoteSh(options.appExecutable)} --expose-internals ${quoteSh(options.dshBootstrapPath)} "$@"`,
++    ].join(' '),
++    '',
++  ].join('\n')
++}
++
+ interface PathEntry {
+   key: string
+   value: string | undefined
+@@ -540,9 +554,9 @@ function installPathDirectory(
+   }
+ }
+ 
+-/** Install the packaged DSH command into the Windows Host process PATH. */
++/** Install the packaged DSH command into the Windows or POSIX Host process PATH. */
+ export function installDesktopDshRuntime(options: DesktopDshRuntimeOptions): DesktopDshRuntimeInstallation {
+-  if (options.platform !== 'win32') {
++  if (options.platform !== 'darwin' && options.platform !== 'linux' && options.platform !== 'win32') {
+     throw new Error(`dsh-plugin-desktop: dsh runtime is unsupported on ${options.platform}`)
+   }
+   assertDesktopProfileName(options.profileName)
+@@ -553,14 +567,16 @@ export function installDesktopDshRuntime(options: DesktopDshRuntimeOptions): Des
+     ['state directory', options.stateDir],
+   ] as const) assertScriptValue(label, value)
+ 
++  const windows = options.platform === 'win32'
++  const dshShimName = windows ? 'dsh.cmd' : 'dsh'
+   const plan = runtimeGenerationPlan('dsh', options.platform, ['bin'], [{
+-    relativePath: 'bin/dsh.cmd',
+-    contents: windowsDshShim(options),
+-    mode: PRIVATE_FILE_MODE,
++    relativePath: `bin/${dshShimName}`,
++    contents: windows ? windowsDshShim(options) : posixDshShim(options),
++    mode: windows ? PRIVATE_FILE_MODE : EXECUTABLE_FILE_MODE,
+   }])
+   const generation = installRuntimeGeneration(options.stateDir, plan)
+   const pathDir = join(generation.root, 'bin')
+-  const dshShimPath = join(pathDir, 'dsh.cmd')
++  const dshShimPath = join(pathDir, dshShimName)
+ 
+   return {
+     pathDir,
+diff --git a/dsh-plugin-desktop/src/desktop-terminal.ts b/dsh-plugin-desktop/src/desktop-terminal.ts
+index a9fa2e3..4520ce0 100644
+--- a/dsh-plugin-desktop/src/desktop-terminal.ts
++++ b/dsh-plugin-desktop/src/desktop-terminal.ts
+@@ -49,7 +49,28 @@ const WINDOWS_SHELL_COMMANDS = ['pwsh.exe', 'powershell.exe', 'cmd.exe'] as cons
+ const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
+ 
+ /** Platforms with a native terminal launch contract owned by DSH Desktop. */
+-export type DesktopTerminalPlatform = 'darwin' | 'win32'
++export type DesktopTerminalPlatform = 'darwin' | 'linux' | 'win32'
++
++/**
++ * Linux terminal emulators tried in order, with the argument that places the
++ * welcome command after it.
++ *
++ * `deepin-terminal` is first because it is the default terminal on deepin /
++ * 统信 UOS; `x-terminal-emulator` is the Debian alternatives link that UOS and
++ * most Debian-derived distributions maintain; the remaining entries cover the
++ * common GTK/KDE/conservative X11 emulators found on an offline intranet image.
++ */
++const LINUX_TERMINAL_LAUNCHERS: ReadonlyArray<readonly [string, readonly string[]]> = [
++  ['deepin-terminal', ['-e']],
++  ['x-terminal-emulator', ['-e']],
++  ['gnome-terminal', ['--']],
++  ['konsole', ['-e']],
++  ['xfce4-terminal', ['-e']],
++  ['mate-terminal', ['-e']],
++  ['tilix', ['-e']],
++  ['alacritty', ['-e']],
++  ['xterm', ['-e']],
++]
+ 
+ /** Process launcher injected by the Electron adapter. */
+ export type DesktopTerminalSpawn = (
+@@ -371,6 +392,56 @@ function macWelcome(
+   ].join('\n')
+ }
+ 
++/** Build the Linux script run by the chosen terminal emulator in the user's shell. */
++function linuxWelcome(
++  options: DesktopTerminalOptions,
++  shimDir: string,
++  bashRcPath: string,
++): string {
++  const commandHelp = 'dsh --dump-config'
++  const pluginAdd = 'dsh plugin add <third-party-plugin>'
++  const pluginRemove = 'dsh plugin remove <third-party-plugin>'
++  const pluginUpdate = 'dsh plugin update'
++  return [
++    '#!/bin/sh',
++    `unset ${RUN_AS_NODE}`,
++    `export ${DSH_HOME}=${quoteSh(options.homeDir)}`,
++    `export PATH=${quoteSh(shimDir)}:"\${PATH:-}"`,
++    `cd ${quoteSh(options.profileDir)}`,
++    "printf '\\033[2J\\033[3J\\033[H'",
++    `printf '%s\\n' ${quoteSh(`DSH Desktop ${options.productVersion} terminal`)}`,
++    `printf '%s\\n' ${quoteSh(`Profile: ${options.profileName}`)}`,
++    `printf '%s\\n' ${quoteSh(`Profile directory: ${options.profileDir}`)}`,
++    `printf '%s\\n' ${quoteSh(`Harness home: ${options.homeDir}`)}`,
++    `printf '%s\\n' ${quoteSh(`Plugin commands without --profile modify the ${options.profileName} profile.`)}`,
++    `printf '%s\\n' ${quoteSh('Commands:')}`,
++    `printf '  %s\\n' ${quoteSh(commandHelp)}`,
++    `printf '  %s\\n' ${quoteSh(pluginAdd)}`,
++    `printf '  %s\\n' ${quoteSh(pluginRemove)}`,
++    `printf '  %s\\n' ${quoteSh(pluginUpdate)}`,
++    `printf '%s\\n' ${quoteSh('Restart DSH Desktop after plugin changes.')}`,
++    // Linux login defaults to bash (`/bin/sh` on UOS is dash and rejects both
++    // `--rcfile` and interactive rcfile sourcing), so bash is the explicit
++    // fallback rather than the macOS zsh fallback.
++    'case "${SHELL:-/bin/bash}" in',
++    '  */bash)',
++    '    export DSH_DESKTOP_USER_BASHRC="${HOME:-}/.bashrc"',
++    `    exec "\${SHELL}" --noprofile --rcfile ${quoteSh(bashRcPath)} -i`,
++    '    ;;',
++    '  */zsh)',
++    '    export DSH_DESKTOP_USER_ZDOTDIR="${ZDOTDIR:-${HOME:-}}"',
++    `    export ZDOTDIR=${quoteSh(options.stateDir)}`,
++    '    exec "${SHELL}" -i',
++    '    ;;',
++    '  *)',
++    '    export DSH_DESKTOP_USER_BASHRC="${HOME:-}/.bashrc"',
++    `    exec /bin/bash --noprofile --rcfile ${quoteSh(bashRcPath)} -i`,
++    '    ;;',
++    'esac',
++    '',
++  ].join('\n')
++}
++
+ /** Build the PowerShell script that remains active in the new console. */
+ function windowsWelcome(): string {
+   const commandHelp = 'dsh --dump-config'
+@@ -427,7 +498,7 @@ function windowsCmdWelcome(): string {
+ 
+ /** Create command shims and the interactive welcome script. */
+ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTerminalFiles {
+-  if (options.platform !== 'darwin' && options.platform !== 'win32') {
++  if (options.platform !== 'darwin' && options.platform !== 'linux' && options.platform !== 'win32') {
+     throw new Error(`dsh-plugin-desktop: terminal is unsupported on ${options.platform}`)
+   }
+   assertDesktopProfileName(options.profileName)
+@@ -445,13 +516,16 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
+   prepareStateDirectory(options.stateDir)
+   const shimDir = join(options.stateDir, 'bin')
+   prepareStateDirectory(shimDir)
+-  if (options.platform === 'darwin') {
++  // macOS and Linux share the POSIX shim builders below: every one of them
++  // emits ordinary `#!/bin/sh` scripts, and only the interactive welcome
++  // differs (Terminal.app vs. a Linux terminal emulator, zsh vs. bash default).
++  if (options.platform === 'darwin' || options.platform === 'linux') {
+     const files: DesktopTerminalFiles = {
+       shimDir,
+       dshShimPath: join(shimDir, 'dsh'),
+       pnpmShimPath: join(shimDir, 'pnpm'),
+       nodeShimPath: join(shimDir, 'node'),
+-      welcomePath: join(options.stateDir, 'welcome.command'),
++      welcomePath: join(options.stateDir, options.platform === 'darwin' ? 'welcome.command' : 'welcome.sh'),
+     }
+     const bashRcPath = join(options.stateDir, 'bashrc')
+     replacePrivateFile(files.dshShimPath, macDshShim(options), EXECUTABLE_FILE_MODE)
+@@ -459,7 +533,13 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
+     replacePrivateFile(files.nodeShimPath, macShim(options.appExecutable), EXECUTABLE_FILE_MODE)
+     replacePrivateFile(join(options.stateDir, '.zshrc'), macZshRc(options, shimDir), PRIVATE_FILE_MODE)
+     replacePrivateFile(bashRcPath, macBashRc(options, shimDir), PRIVATE_FILE_MODE)
+-    replacePrivateFile(files.welcomePath, macWelcome(options, shimDir, bashRcPath), EXECUTABLE_FILE_MODE)
++    replacePrivateFile(
++      files.welcomePath,
++      options.platform === 'darwin'
++        ? macWelcome(options, shimDir, bashRcPath)
++        : linuxWelcome(options, shimDir, bashRcPath),
++      EXECUTABLE_FILE_MODE,
++    )
+     return files
+   }
+   if (options.platform === 'win32') {
+@@ -657,6 +737,29 @@ function reportLaunchError(options: DesktopTerminalOptions, cause: Error): void
+   process.stderr.write(`dsh-plugin-desktop: failed to open terminal: ${cause.message}\n`)
+ }
+ 
++/** Resolve the first installed Linux terminal emulator from the inherited PATH. */
++export function resolveLinuxTerminalLauncher(
++  environment: Readonly<NodeJS.ProcessEnv>,
++  exists: DesktopTerminalExecutableExists = existsSync,
++): { executable: string; arguments: readonly string[] } {
++  const inheritedPath = environment[PATH]
++  const directories = (inheritedPath ?? '')
++    .split(':')
++    .filter(directory => directory.length > 0)
++  for (const [executable, argvPrefix] of LINUX_TERMINAL_LAUNCHERS) {
++    for (const directory of directories) {
++      const candidate = `${directory.replace(/\/+$/u, '')}/${executable}`
++      if (!exists(candidate)) continue
++      assertScriptValue(`${executable} executable`, candidate)
++      return { executable: candidate, arguments: argvPrefix }
++    }
++  }
++  throw new Error(
++    'dsh-plugin-desktop: terminal requires a Linux terminal emulator on PATH'
++      + ` (tried ${LINUX_TERMINAL_LAUNCHERS.map(([name]) => name).join(', ')})`,
++  )
++}
++
+ /**
+  * Generate a private desktop CLI environment and open it in a native terminal.
+  * @param options - packaged CLI paths, profile identity, private state, and process adapter.
+@@ -674,6 +777,10 @@ export function openDesktopTerminal(options: DesktopTerminalOptions): DesktopTer
+   if (options.platform === 'darwin') {
+     command = '/usr/bin/open'
+     args = ['-a', 'Terminal', files.welcomePath]
++  } else if (options.platform === 'linux') {
++    const launcher = resolveLinuxTerminalLauncher(env)
++    command = launcher.executable
++    args = [...(launcher.arguments ?? []), files.welcomePath]
+   } else {
+     const shell = resolveWindowsShell(options, env)
+     const shellArgs = windowsShellArgv(shell, files)
+diff --git a/dsh-plugin-desktop/src/electron-platform.ts b/dsh-plugin-desktop/src/electron-platform.ts
+index bc78b36..5f0657d 100644
+--- a/dsh-plugin-desktop/src/electron-platform.ts
++++ b/dsh-plugin-desktop/src/electron-platform.ts
+@@ -84,8 +84,15 @@ class MacPlatformStrategy implements ElectronPlatformStrategy {
+ 
+ class LinuxPlatformStrategy implements ElectronPlatformStrategy {
+   readonly platform = 'linux'
++  // UOS update artifacts are distributed as offline packages on the intranet;
++  // there is no published Linux download endpoint to point at, so scheduled
++  // update download stays disabled (`undefined`) while the check UI degrades to
++  // "download unavailable" instead of contacting an absent endpoint.
+   readonly updateDownloadPlatform = undefined
+-  readonly canPickDirectory = false
++  // Electron's native `dialog.showOpenDialog` honours the desktop portal on
++  // X11 and Wayland, so the UOS port serves the same Desktop-owned picker the
++  // Windows strategy does instead of relying on zenity/kdialog being installed.
++  readonly canPickDirectory = true
+   readonly canToggleShellMode = false
+   readonly hidesWindowOnClose = false
+ 
+diff --git a/dsh-plugin-desktop/src/index.ts b/dsh-plugin-desktop/src/index.ts
+index 79bbc5c..bd3f3ee 100644
+--- a/dsh-plugin-desktop/src/index.ts
++++ b/dsh-plugin-desktop/src/index.ts
+@@ -277,7 +277,9 @@ export function apply(ctx: Context, config: DesktopShellConfig): void {
+     }),
+     'dsh-plugin-desktop: renderer boot report route',
+   )
+-  if (runtime.platform === 'win32') {
++  // Windows and Linux serve the Desktop-owned native picker route. macOS keeps
++  // upstream's auto picker, which already resolves natively there.
++  if (runtime.platform === 'win32' || runtime.platform === 'linux') {
+     ctx.effect(
+       () => ctx.webServer.register({
+         kind: 'exact',
+diff --git a/dsh-plugin-desktop/src/main.ts b/dsh-plugin-desktop/src/main.ts
+index 01d3492..abae5fa 100644
+--- a/dsh-plugin-desktop/src/main.ts
++++ b/dsh-plugin-desktop/src/main.ts
+@@ -1515,7 +1515,9 @@ async function start(): Promise<void> {
+     }
+     startupStage = 'runtime-bootstrap'
+     lifecycleRecorder.transitionStartupStage(startupStage)
+-    const dshRuntime = process.platform === 'win32'
++    // Windows and (since the UOS port) Linux publish the packaged `dsh` command
++    // into the Host PATH. macOS keeps its per-terminal shim only.
++    const dshRuntime = process.platform === 'win32' || process.platform === 'linux'
+       ? installDesktopDshRuntime({
+           platform: process.platform,
+           appExecutable: process.execPath,
+diff --git a/dsh-plugin-desktop/src/profile.ts b/dsh-plugin-desktop/src/profile.ts
+index d11a7aa..0542ae5 100644
+--- a/dsh-plugin-desktop/src/profile.ts
++++ b/dsh-plugin-desktop/src/profile.ts
+@@ -1476,10 +1476,14 @@ export function prepareDesktopProfile(
+   if (webserver === undefined) {
+     throw new Error(`${BIN_NAME}: desktop profile has no webserver row`)
+   }
+-  if (platform === 'win32') {
+-    if (!rows.has(DIRECTORY_PICKER_ROW_ID)) {
+-      throw new Error(`${BIN_NAME}: desktop profile has no directory-picker row`)
+-    }
++  if (platform === 'win32' && !rows.has(DIRECTORY_PICKER_ROW_ID)) {
++    throw new Error(`${BIN_NAME}: desktop profile has no directory-picker row`)
++  }
++  // Windows and Linux both replace upstream's auto chooser with the Desktop-owned
++  // browse backend, so the native picker route (Electron `dialog.showOpenDialog`)
++  // serves every packaged desktop instead of depending on zenity/kdialog being
++  // installed. macOS keeps upstream's auto picker, which resolves natively there.
++  if ((platform === 'win32' || platform === 'linux') && rows.has(DIRECTORY_PICKER_ROW_ID)) {
+     patches.push(
+       {
+         id: DIRECTORY_PICKER_ROW_ID,
+@@ -1499,6 +1503,8 @@ export function prepareDesktopProfile(
+         ],
+       },
+     )
++  }
++  if (platform === 'win32') {
+     const pwshSandbox = rows.get(PWSH_SANDBOX_ROW_ID)
+     if (pwshSandbox?.name === UPSTREAM_PWSH_SANDBOX_PACKAGE
+       && !rowDisabledOnPlatform(pwshSandbox, platform)) {
+diff --git a/dsh-plugin-desktop/src/terminal.ts b/dsh-plugin-desktop/src/terminal.ts
+index d943bd2..6d89e31 100644
+--- a/dsh-plugin-desktop/src/terminal.ts
++++ b/dsh-plugin-desktop/src/terminal.ts
+@@ -15,8 +15,13 @@ export const inject = ['desktopRuntime']
+  * @param ctx - Host context carrying the Electron adapter.
+  */
+ export function apply(ctx: Context): void {
+-  if (ctx.desktopRuntime.platform === 'linux') {
+-    throw new Error('dsh-plugin-desktop: the packaged terminal is supported on macOS and Windows')
++  // macOS, Windows, and (since the UOS port) Linux each own a native terminal
++  // launch contract in `desktop-terminal.ts`.
++  const supported = ctx.desktopRuntime.platform === 'darwin'
++    || ctx.desktopRuntime.platform === 'win32'
++    || ctx.desktopRuntime.platform === 'linux'
++  if (!supported) {
++    throw new Error(`dsh-plugin-desktop: the packaged terminal is unsupported on ${ctx.desktopRuntime.platform}`)
+   }
+   ctx.effect(() => {
+     const registration = ctx.desktopRuntime.registerTrayItem({
+diff --git a/dsh-plugin-desktop/tests/desktop-runtime-environment.spec.ts b/dsh-plugin-desktop/tests/desktop-runtime-environment.spec.ts
+index 5948f7b..6b83442 100644
+--- a/dsh-plugin-desktop/tests/desktop-runtime-environment.spec.ts
++++ b/dsh-plugin-desktop/tests/desktop-runtime-environment.spec.ts
+@@ -695,6 +695,35 @@ describe('desktop Host dsh runtime', () => {
+     installation.dispose()
+     expect(environment).toEqual(original)
+   })
++
++  it.runIf(process.platform !== 'win32')('content-addresses the POSIX DSH shim for Linux and macOS', () => {
++    const root = temporaryDirectory()
++    const stateDir = join(root, 'runtime')
++    const environment: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
++    const installation = installDesktopDshRuntime({
++      platform: 'linux',
++      appExecutable: '/opt/dsh-desktop/dsh-desktop',
++      dshBootstrapPath: '/opt/dsh-desktop/resources/app.asar/desktop-cli.js',
++      profileName: 'web',
++      homeDir: '/home/tester/.dsh',
++      stateDir,
++      environment,
++    })
++
++    expect(readdirSync(installation.pathDir)).toEqual(['dsh'])
++    expect(installation.dshShimPath).toBe(join(installation.pathDir, 'dsh'))
++    const shim = readFileSync(installation.dshShimPath, 'utf8')
++    expect(shim.startsWith('#!/bin/sh\n')).toBe(true)
++    expect(shim).toContain("DSH_DESKTOP_DEFAULT_PROFILE='web'")
++    expect(shim).toContain("DSH_HOME='/home/tester/.dsh'")
++    expect(shim).toContain("ELECTRON_RUN_AS_NODE=1")
++    expect(shim).toContain('--expose-internals')
++    expect(lstatSync(installation.dshShimPath).mode & 0o777).toBe(0o700)
++    expect(environment.PATH).toBe(`${installation.pathDir}:/usr/bin`)
++
++    installation.dispose()
++    expect(environment.PATH).toBe('/usr/bin')
++  })
+ })
+ 
+ /**
+diff --git a/dsh-plugin-desktop/tests/desktop-terminal.spec.ts b/dsh-plugin-desktop/tests/desktop-terminal.spec.ts
+index 81ef065..dcfda82 100644
+--- a/dsh-plugin-desktop/tests/desktop-terminal.spec.ts
++++ b/dsh-plugin-desktop/tests/desktop-terminal.spec.ts
+@@ -1,12 +1,13 @@
+ import { spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
+ import { EventEmitter } from 'node:events'
+-import { lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
++import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { basename, dirname, join } from 'node:path'
+ import { afterEach, describe, expect, it, vi } from 'vitest'
+ import {
+   desktopTerminalStateDirectory,
+   openDesktopTerminal,
++  resolveLinuxTerminalLauncher,
+   type DesktopTerminalOptions,
+   type DesktopTerminalSpawn,
+ } from '../src/desktop-terminal.ts'
+@@ -471,12 +472,54 @@ describe('desktop terminal environment', () => {
+     }))
+   })
+ 
++  it('resolves the first installed Linux terminal emulator in preference order', () => {
++    const exists = (filename: string): boolean => filename === '/usr/bin/x-terminal-emulator'
++    expect(resolveLinuxTerminalLauncher({ PATH: '/usr/local/bin:/usr/bin:/bin' }, exists))
++      .toEqual({ executable: '/usr/bin/x-terminal-emulator', arguments: ['-e'] })
++
++    const deepin = (filename: string): boolean => filename.endsWith('/deepin-terminal') || filename.endsWith('/x-terminal-emulator')
++    expect(resolveLinuxTerminalLauncher({ PATH: '/usr/bin' }, deepin))
++      .toEqual({ executable: '/usr/bin/deepin-terminal', arguments: ['-e'] })
++
++    const gnome = (filename: string): boolean => filename.endsWith('/gnome-terminal')
++    expect(resolveLinuxTerminalLauncher({ PATH: '/usr/bin' }, gnome))
++      .toEqual({ executable: '/usr/bin/gnome-terminal', arguments: ['--'] })
++
++    expect(() => resolveLinuxTerminalLauncher({ PATH: '/nonexistent' }, () => false))
++      .toThrow('terminal requires a Linux terminal emulator on PATH')
++  })
++
++  it.runIf(process.platform !== 'win32')('generates POSIX shims and launches the Linux terminal emulator', () => {
++    const root = temporaryDirectory()
++    const harness = spawnHarness()
++    const binDir = join(root, 'usr-bin')
++    mkdirSync(binDir, { recursive: true })
++    const emulator = join(binDir, 'deepin-terminal')
++    writeFileSync(emulator, '#!/bin/sh\n', { mode: 0o755 })
++
++    const options = macOptions(join(root, 'linux'), harness.spawn)
++    options.platform = 'linux'
++    options.environment = { PATH: binDir }
++
++    const launch = openDesktopTerminal(options)
++    expect(launch.dshShimPath).toBe(join(launch.shimDir, 'dsh'))
++    expect(readFileSync(launch.dshShimPath, 'utf8')).toContain('--expose-internals')
++    expect(readFileSync(launch.pnpmShimPath, 'utf8')).toContain('npm_config_runtime=electron')
++    expect(readFileSync(launch.welcomePath, 'utf8')).toContain('DSH Desktop 2.0.0 terminal')
++    expect(basename(launch.welcomePath)).toBe('welcome.sh')
++    expect(launch.child).toBe(harness.child)
++    expect(harness.calls).toHaveLength(1)
++    expect(harness.calls[0]?.command).toBe(emulator)
++    expect(harness.calls[0]?.args).toEqual(['-e', launch.welcomePath])
++    expect(harness.calls[0]?.options.env?.DSH_HOME).toBe(options.homeDir)
++  })
++
+   it('accepts localized macOS profile names and rejects path escapes before writing state', () => {
+     const root = temporaryDirectory()
+     const harness = spawnHarness()
+     const unsupported = macOptions(join(root, 'unsupported'), harness.spawn)
+-    unsupported.platform = 'linux'
+-    expect(() => openDesktopTerminal(unsupported)).toThrow('terminal is unsupported on linux')
++    unsupported.platform = 'freebsd'
++    expect(() => openDesktopTerminal(unsupported)).toThrow('terminal is unsupported on freebsd')
+     expect(() => lstatSync(unsupported.stateDir)).toThrow()
+ 
+     const unsafe = macOptions(join(root, 'unsafe'), harness.spawn)
+diff --git a/dsh-plugin-desktop/tests/electron-platform.spec.ts b/dsh-plugin-desktop/tests/electron-platform.spec.ts
+index 3c11b45..227d012 100644
+--- a/dsh-plugin-desktop/tests/electron-platform.spec.ts
++++ b/dsh-plugin-desktop/tests/electron-platform.spec.ts
+@@ -88,13 +88,15 @@ describe('electronPlatformStrategy', () => {
+     expect(electron.Menu.setApplicationMenu).toHaveBeenCalledOnce()
+   })
+ 
+-  it('selects the Linux adapter without desktop chrome tweaks', () => {
++  it('selects the Linux adapter with the Desktop-owned directory picker', () => {
+     const strategy = electronPlatformStrategy('linux')
+     const window = createWindow()
+ 
+     expect(strategy.platform).toBe('linux')
+     expect(strategy.updateDownloadPlatform).toBeUndefined()
+-    expect(strategy.canPickDirectory).toBe(false)
++    // UOS serves the Desktop-owned picker through Electron's native dialog
++    // instead of depending on zenity/kdialog being present.
++    expect(strategy.canPickDirectory).toBe(true)
+     expect(strategy.canToggleShellMode).toBe(false)
+     // No Linux desktop guarantees a status area, so a hidden window would have
+     // no way back. Linux generations minimize on close instead.
+diff --git a/dsh-plugin-desktop/tests/electron-runtime.spec.ts b/dsh-plugin-desktop/tests/electron-runtime.spec.ts
+index ff6e22e..32110de 100644
+--- a/dsh-plugin-desktop/tests/electron-runtime.spec.ts
++++ b/dsh-plugin-desktop/tests/electron-runtime.spec.ts
+@@ -837,6 +837,7 @@ describe('Electron desktop runtime', () => {
+   it('selects the restricted Linux platform adapter once for native capabilities', async () => {
+     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
+     electron.app.isPackaged = true
++    electron.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: ['/home/anna/work'] })
+     const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+     const runtime = new ElectronDesktopRuntime(async () => {})
+     const release = runtime.schedule(spec)
+@@ -846,7 +847,13 @@ describe('Electron desktop runtime', () => {
+     expect(runtime.platform).toBe('linux')
+     expect(electron.contentViews).toHaveLength(0)
+     expect(runtime.updates.canDownload).toBe(false)
+-    await expect(runtime.pickDirectory()).rejects.toThrow('native workspace picker is unavailable on linux')
++    // UOS serves the Desktop-owned picker through Electron's native dialog, so
++    // the same parented chooser the Windows adapter uses is available.
++    await expect(runtime.pickDirectory()).resolves.toBe('/home/anna/work')
++    expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(
++      electron.browserWindows[0],
++      { title: 'Select Workspace Directory', properties: ['openDirectory', 'dontAddToRecent'] },
++    )
+     expect(electron.app.dock.setIcon).not.toHaveBeenCalled()
+     expect(electron.Menu.setApplicationMenu).not.toHaveBeenCalled()
+     expect(electron.browserWindows[0]?.removeMenu).not.toHaveBeenCalled()
+diff --git a/dsh-plugin-desktop/tests/profile.spec.ts b/dsh-plugin-desktop/tests/profile.spec.ts
+index 4da6ed9..904680e 100644
+--- a/dsh-plugin-desktop/tests/profile.spec.ts
++++ b/dsh-plugin-desktop/tests/profile.spec.ts
+@@ -402,8 +402,10 @@ virtualStoreDirMaxLength: 60
+     expect(rows.map(row => row.id)).not.toContain('desktop-windows-pwsh-sandbox')
+     expect(rows.find(row => row.id === 'desktop-terminal')).toEqual(expect.objectContaining({
+       name: 'dsh-plugin-desktop/terminal',
+-      disabled: { __jsExpr: "process.platform === 'linux'" },
+     }))
++    // The UOS port removed the Linux platform gate: the packaged terminal now
++    // has a native contract on macOS, Windows, and Linux.
++    expect(rows.find(row => row.id === 'desktop-terminal')?.disabled).toBeFalsy()
+     expect(rows.find(row => row.id === 'desktop-pnpm')).toEqual(expect.objectContaining({
+       name: 'dsh-plugin-desktop/pnpm',
+     }))

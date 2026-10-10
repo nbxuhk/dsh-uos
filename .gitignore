@@ -1,0 +1,33 @@
+# ── 大体积产物：不入库，走 Release 附件或本地构建 ──
+src/
+*.bundle
+*.tar
+
+# 构建产物（deb / AppImage 走 Release 附件）
+outputs/WB-0005/*.deb
+outputs/WB-0005/*.AppImage
+outputs/**/deps/*.deb
+outputs/**/*.run
+
+# ── 通用忽略 ──
+node_modules/
+dist/
+build/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 凭据与本地配置（严禁入库）
+.env
+.env.*
+*credentials*
+*token*
+*-凭据-*
+vm-run.sh
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
